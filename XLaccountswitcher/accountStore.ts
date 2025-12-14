@@ -242,3 +242,53 @@ export function addTestAccount(): Account {
     const accounts = getAccounts();
     return addAccount(`Test ${accounts.length + 1}`, `TEST_TOKEN_${Date.now()}`);
 }
+
+export interface ValidationResult {
+    valid: number;
+    removed: number;
+    removedNames: string[];
+}
+
+export async function validateAllAccounts(
+    onProgress?: (current: number, total: number) => void
+): Promise<ValidationResult> {
+    const accounts = getAccounts();
+    const result: ValidationResult = { valid: 0, removed: 0, removedNames: [] };
+    const validAccounts: Account[] = [];
+
+    console.log(`[XLAccountSwitcher] Validating ${accounts.length} accounts...`);
+
+    for (let i = 0; i < accounts.length; i++) {
+        const acc = accounts[i];
+        if (onProgress) onProgress(i + 1, accounts.length);
+
+        try {
+            const userInfo = await validateToken(acc.token);
+            if (userInfo) {
+                validAccounts.push({
+                    ...acc,
+                    discordId: userInfo.id,
+                    avatarUrl: getAvatarUrl(userInfo.id, userInfo.avatar)
+                });
+                result.valid++;
+            } else {
+                result.removed++;
+                result.removedNames.push(acc.nickname);
+                console.log(`[XLAccountSwitcher] Removed invalid: ${acc.nickname}`);
+            }
+        } catch {
+            result.removed++;
+            result.removedNames.push(acc.nickname);
+            console.log(`[XLAccountSwitcher] Removed (error): ${acc.nickname}`);
+        }
+
+        await new Promise(r => setTimeout(r, 50));
+    }
+
+    if (result.removed > 0) {
+        saveAccounts(validAccounts);
+    }
+
+    console.log(`[XLAccountSwitcher] Validation done: ${result.valid} valid, ${result.removed} removed`);
+    return result;
+}

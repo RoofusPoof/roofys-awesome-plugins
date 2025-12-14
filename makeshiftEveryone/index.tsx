@@ -129,7 +129,7 @@ const Patch: NavContextMenuPatchCallback = (children, { guild }: { guild: Guild;
 export default definePlugin({
     name: "MakeshiftEveryone",
     description: "new button under server context menu that works as a @everyone, you should off syntax markdown in chat settings to copy the ids",
-    authors: [{ name: "roofus", id: 1352342643853492246n }],
+    authors: [{ name: "RoofusPoof", id: 1352342643853492246n }],
 
     contextMenus: {
         "guild-context": Patch,

@@ -1,10 +1,10 @@
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
-import { Menu } from "@webpack/common";
+import { Menu, showToast, Toasts } from "@webpack/common";
 
 import { openAccountModal } from "./AccountModal";
-import { addTestAccount, clearAllAccounts, getAccounts, switchToAccount } from "./accountStore";
+import { addTestAccount, clearAllAccounts, getAccounts, switchToAccount, validateAllAccounts } from "./accountStore";
 import { settings } from "./settings";
 
 function buildAccountSwitcherMenu() {
@@ -51,7 +51,7 @@ const userContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {
 export default definePlugin({
     name: "XLAccountSwitcher",
     description: "better account switcher so you're not limited to 5 only, right click your user in any chat to access",
-    authors: [Devs.Ven],
+    authors: [{ name: "RoofusPoof", id: 1352342643853492246n }],
     settings,
 
     contextMenus: {
@@ -67,6 +67,17 @@ export default definePlugin({
 
     start() {
         console.log("[XLAccountSwitcher] Started");
+
+        // Validate all accounts on startup
+        const accounts = getAccounts();
+        if (accounts.length > 0) {
+            validateAllAccounts().then(result => {
+                if (result.removed > 0) {
+                    showToast(`Removed ${result.removed} invalid accounts`, Toasts.Type.MESSAGE);
+                }
+                console.log(`[XLAccountSwitcher] ${result.valid} valid, ${result.removed} removed`);
+            });
+        }
     },
 
     stop() {

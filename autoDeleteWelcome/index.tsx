@@ -34,7 +34,7 @@ function silentDeleteMessage(channelId: string, messageId: string): void {
 export default definePlugin({
     name: "AutoDeleteWelcome",
     description: "auto-deletes your welcome messages",
-    authors: [{ name: "roofus", id: 1352342643853492246n }],
+    authors: [{ name: "RoofusPoof", id: 1352342643853492246n }],
 
     flux: {
         MESSAGE_CREATE({ message, channelId }: { message: any; channelId: string; }) {
