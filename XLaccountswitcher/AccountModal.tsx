@@ -1,8 +1,8 @@
 import { Margins } from "@utils/margins";
 import { ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
-import { Button, Forms, Text, TextInput, useState } from "@webpack/common";
+import { Button, Forms, showToast, Text, TextInput, Toasts, useState } from "@webpack/common";
 
-import { Account, addAccount, deleteAccount, getAccounts, massImportTokens, MassImportResult, updateAccount } from "./accountStore";
+import { Account, addAccount, deleteAccount, deleteInvalidAccount, getAccounts, getInvalidAccounts, massImportTokens, MassImportResult, retryValidateAccount, updateAccount } from "./accountStore";
 
 const styles = {
     accountList: {
@@ -134,6 +134,38 @@ function AccountItem({ account, onEdit, onDelete, onSwitch }: AccountItemProps) 
     );
 }
 
+interface InvalidAccountItemProps {
+    account: Account;
+    onRetry: (id: string) => void;
+    onDelete: (id: string) => void;
+    loading: boolean;
+}
+
+function InvalidAccountItem({ account, onRetry, onDelete, loading }: InvalidAccountItemProps) {
+    const defaultAvatar = `https://cdn.discordapp.com/embed/avatars/0.png`;
+    return (
+        <div style={{ ...styles.accountItem, borderLeft: "3px solid #ed4245" }}>
+            <div style={styles.accountInfo}>
+                <img
+                    src={account.avatarUrl || defaultAvatar}
+                    style={{ ...styles.avatar, opacity: 0.5 }}
+                    onError={(e) => { (e.target as HTMLImageElement).src = defaultAvatar; }}
+                />
+                <div style={styles.accountText}>
+                    <Text variant="text-md/semibold" style={{ color: "#ed4245" }}>{account.nickname}</Text>
+                    <Text variant="text-xs/normal" style={{ color: "#b5bac1" }}>Token: ****{account.token.slice(-8)}</Text>
+                </div>
+            </div>
+            <div style={styles.buttonGroup}>
+                <Button size={Button.Sizes.SMALL} color={Button.Colors.GREEN} onClick={() => onRetry(account.id)} disabled={loading}>
+                    {loading ? "..." : "Retry"}
+                </Button>
+                <Button size={Button.Sizes.SMALL} color={Button.Colors.RED} look={Button.Looks.LINK} onClick={() => onDelete(account.id)}>Delete</Button>
+            </div>
+        </div>
+    );
+}
+
 interface AddEditFormProps {
     account?: Account;
     onSave: (nickname: string, token: string) => void;
@@ -240,19 +272,24 @@ interface AccountModalProps {
     onSwitch: (account: Account) => void;
 }
 
-type TabType = "accounts" | "add" | "import";
+type TabType = "accounts" | "add" | "import" | "invalid";
 
 function AccountModalContent({ onSwitch }: AccountModalProps) {
     const [accounts, setAccounts] = useState<Account[]>(getAccounts());
+    const [invalidAccounts, setInvalidAccounts] = useState<Account[]>(getInvalidAccounts());
     const [editingAccount, setEditingAccount] = useState<Account | null>(null);
     const [activeTab, setActiveTab] = useState<TabType>("accounts");
+    const [retryLoading, setRetryLoading] = useState<string | null>(null);
 
-    const refreshAccounts = () => setAccounts(getAccounts());
+    const refresh = () => {
+        setAccounts(getAccounts());
+        setInvalidAccounts(getInvalidAccounts());
+    };
 
     const handleAddAccount = (nickname: string, token: string) => {
         try {
             addAccount(nickname, token);
-            refreshAccounts();
+            refresh();
             setActiveTab("accounts");
         } catch (e) { }
     };
@@ -260,7 +297,7 @@ function AccountModalContent({ onSwitch }: AccountModalProps) {
     const handleEditAccount = (nickname: string, token: string) => {
         if (editingAccount) {
             updateAccount(editingAccount.id, nickname, token);
-            refreshAccounts();
+            refresh();
             setEditingAccount(null);
             setActiveTab("accounts");
         }
@@ -268,7 +305,19 @@ function AccountModalContent({ onSwitch }: AccountModalProps) {
 
     const handleDeleteAccount = (id: string) => {
         deleteAccount(id);
-        refreshAccounts();
+        refresh();
+    };
+
+    const handleRetryInvalid = async (id: string) => {
+        setRetryLoading(id);
+        await retryValidateAccount(id);
+        refresh();
+        setRetryLoading(null);
+    };
+
+    const handleDeleteInvalid = (id: string) => {
+        deleteInvalidAccount(id);
+        refresh();
     };
 
     if (editingAccount) {
@@ -287,6 +336,11 @@ function AccountModalContent({ onSwitch }: AccountModalProps) {
                 <button style={{ ...styles.tab, ...(activeTab === "import" ? styles.activeTab : {}) }} onClick={() => setActiveTab("import")}>
                     Import
                 </button>
+                {invalidAccounts.length > 0 && (
+                    <button style={{ ...styles.tab, ...(activeTab === "invalid" ? styles.activeTab : {}), backgroundColor: activeTab === "invalid" ? "#ed4245" : "#2b2d31" }} onClick={() => setActiveTab("invalid")}>
+                        Invalid ({invalidAccounts.length})
+                    </button>
+                )}
             </div>
 
             {activeTab === "accounts" && (
@@ -296,14 +350,49 @@ function AccountModalContent({ onSwitch }: AccountModalProps) {
                             <Text variant="text-md/normal" style={{ color: "#b5bac1" }}>No accounts yet</Text>
                         </div>
                     ) : (
+                        <>
+                            <div style={styles.accountList}>
+                                {accounts.map(account => (
+                                    <AccountItem
+                                        key={account.id}
+                                        account={account}
+                                        onEdit={setEditingAccount}
+                                        onDelete={handleDeleteAccount}
+                                        onSwitch={onSwitch}
+                                    />
+                                ))}
+                            </div>
+                            <Button
+                                style={{ marginTop: "12px", width: "100%" }}
+                                color={Button.Colors.PRIMARY}
+                                onClick={() => {
+                                    const tokens = accounts.map(a => a.token).join("\n");
+                                    navigator.clipboard.writeText(tokens);
+                                    showToast(`Copied ${accounts.length} tokens`, Toasts.Type.SUCCESS);
+                                }}
+                            >
+                                Copy All Tokens
+                            </Button>
+                        </>
+                    )}
+                </div>
+            )}
+
+            {activeTab === "invalid" && (
+                <div>
+                    {invalidAccounts.length === 0 ? (
+                        <div style={{ textAlign: "center", padding: "24px" }}>
+                            <Text variant="text-md/normal" style={{ color: "#b5bac1" }}>No invalid accounts</Text>
+                        </div>
+                    ) : (
                         <div style={styles.accountList}>
-                            {accounts.map(account => (
-                                <AccountItem
+                            {invalidAccounts.map(account => (
+                                <InvalidAccountItem
                                     key={account.id}
                                     account={account}
-                                    onEdit={setEditingAccount}
-                                    onDelete={handleDeleteAccount}
-                                    onSwitch={onSwitch}
+                                    onRetry={handleRetryInvalid}
+                                    onDelete={handleDeleteInvalid}
+                                    loading={retryLoading === account.id}
                                 />
                             ))}
                         </div>
@@ -312,7 +401,7 @@ function AccountModalContent({ onSwitch }: AccountModalProps) {
             )}
 
             {activeTab === "add" && <AddEditForm onSave={handleAddAccount} onCancel={() => setActiveTab("accounts")} />}
-            {activeTab === "import" && <MassImportForm onComplete={() => { refreshAccounts(); setActiveTab("accounts"); }} />}
+            {activeTab === "import" && <MassImportForm onComplete={() => { refresh(); setActiveTab("accounts"); }} />}
         </div>
     );
 }

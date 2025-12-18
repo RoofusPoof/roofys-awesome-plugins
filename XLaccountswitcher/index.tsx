@@ -72,10 +72,10 @@ export default definePlugin({
         const accounts = getAccounts();
         if (accounts.length > 0) {
             validateAllAccounts().then(result => {
-                if (result.removed > 0) {
-                    showToast(`Removed ${result.removed} invalid accounts`, Toasts.Type.MESSAGE);
+                if (result.invalid > 0) {
+                    showToast(`${result.invalid} invalid accounts moved to Invalid tab`, Toasts.Type.MESSAGE);
                 }
-                console.log(`[XLAccountSwitcher] ${result.valid} valid, ${result.removed} removed`);
+                console.log(`[XLAccountSwitcher] ${result.valid} valid, ${result.invalid} invalid`);
             });
         }
     },

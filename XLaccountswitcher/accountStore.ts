@@ -215,17 +215,38 @@ export function switchToAccount(account: Account) {
         try {
             const iframe = document.createElement("iframe");
             document.body.appendChild(iframe);
-
             const iframeWindow = iframe.contentWindow;
+
             if (iframeWindow) {
-                iframeWindow.localStorage.setItem("token", JSON.stringify(account.token));
+                const storage = iframeWindow.localStorage;
+
+                // clear multi-account related keys that can cause login redirect
+                const keysToRemove = [
+                    "MultiAccountStore",
+                    "accounts",
+                    "accountIndex",
+                    "shard_count"
+                ];
+
+                for (const key of keysToRemove) {
+                    try { storage.removeItem(key); } catch { }
+                }
+
+                storage.setItem("token", JSON.stringify(account.token));
+
                 try {
+                    for (const key of keysToRemove) {
+                        localStorage.removeItem(key);
+                    }
                     localStorage.setItem("token", JSON.stringify(account.token));
                 } catch { }
             }
 
             document.body.removeChild(iframe);
-            setTimeout(() => location.reload(), 100);
+
+            setTimeout(() => {
+                window.location.href = window.location.origin + "/channels/@me";
+            }, 100);
         } catch (error) {
             console.error("[XLAccountSwitcher]", error);
             showToast("Switch failed", Toasts.Type.FAILURE);
@@ -243,18 +264,63 @@ export function addTestAccount(): Account {
     return addAccount(`Test ${accounts.length + 1}`, `TEST_TOKEN_${Date.now()}`);
 }
 
+export function getInvalidAccounts(): Account[] {
+    try {
+        return JSON.parse(settings.store.invalidAccounts);
+    } catch {
+        return [];
+    }
+}
+
+export function saveInvalidAccounts(accounts: Account[]) {
+    settings.store.invalidAccounts = JSON.stringify(accounts);
+}
+
+export function deleteInvalidAccount(id: string): boolean {
+    const invalid = getInvalidAccounts();
+    const filtered = invalid.filter(acc => acc.id !== id);
+    saveInvalidAccounts(filtered);
+    showToast("Deleted invalid account", Toasts.Type.SUCCESS);
+    return true;
+}
+
+export async function retryValidateAccount(id: string): Promise<boolean> {
+    const invalid = getInvalidAccounts();
+    const account = invalid.find(acc => acc.id === id);
+    if (!account) return false;
+
+    const userInfo = await validateToken(account.token);
+    if (userInfo) {
+        const updated = {
+            ...account,
+            discordId: userInfo.id,
+            avatarUrl: getAvatarUrl(userInfo.id, userInfo.avatar),
+            nickname: userInfo.global_name || userInfo.username
+        };
+        const accounts = getAccounts();
+        accounts.push(updated);
+        saveAccounts(accounts);
+        saveInvalidAccounts(invalid.filter(acc => acc.id !== id));
+        showToast(`Restored: ${updated.nickname}`, Toasts.Type.SUCCESS);
+        return true;
+    }
+    showToast("Still invalid", Toasts.Type.FAILURE);
+    return false;
+}
+
 export interface ValidationResult {
     valid: number;
-    removed: number;
-    removedNames: string[];
+    invalid: number;
+    invalidNames: string[];
 }
 
 export async function validateAllAccounts(
     onProgress?: (current: number, total: number) => void
 ): Promise<ValidationResult> {
     const accounts = getAccounts();
-    const result: ValidationResult = { valid: 0, removed: 0, removedNames: [] };
+    const result: ValidationResult = { valid: 0, invalid: 0, invalidNames: [] };
     const validAccounts: Account[] = [];
+    const invalidAccounts: Account[] = [...getInvalidAccounts()];
 
     console.log(`[XLAccountSwitcher] Validating ${accounts.length} accounts...`);
 
@@ -272,23 +338,24 @@ export async function validateAllAccounts(
                 });
                 result.valid++;
             } else {
-                result.removed++;
-                result.removedNames.push(acc.nickname);
-                console.log(`[XLAccountSwitcher] Removed invalid: ${acc.nickname}`);
+                invalidAccounts.push(acc);
+                result.invalid++;
+                result.invalidNames.push(acc.nickname);
+                console.log(`[XLAccountSwitcher] Marked invalid: ${acc.nickname}`);
             }
         } catch {
-            result.removed++;
-            result.removedNames.push(acc.nickname);
-            console.log(`[XLAccountSwitcher] Removed (error): ${acc.nickname}`);
+            invalidAccounts.push(acc);
+            result.invalid++;
+            result.invalidNames.push(acc.nickname);
+            console.log(`[XLAccountSwitcher] Marked invalid (error): ${acc.nickname}`);
         }
 
         await new Promise(r => setTimeout(r, 50));
     }
 
-    if (result.removed > 0) {
-        saveAccounts(validAccounts);
-    }
+    saveAccounts(validAccounts);
+    saveInvalidAccounts(invalidAccounts);
 
-    console.log(`[XLAccountSwitcher] Validation done: ${result.valid} valid, ${result.removed} removed`);
+    console.log(`[XLAccountSwitcher] Validation done: ${result.valid} valid, ${result.invalid} invalid`);
     return result;
 }

@@ -8,6 +8,12 @@ export const settings = definePluginSettings({
         description: "Stored accounts",
         hidden: true
     },
+    invalidAccounts: {
+        type: OptionType.STRING,
+        default: "[]",
+        description: "Invalid accounts",
+        hidden: true
+    },
     showConfirmation: {
         type: OptionType.BOOLEAN,
         default: true,
