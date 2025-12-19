@@ -12,6 +12,8 @@
 !channelLogger/**
 !makeshiftEveryone/
 !makeshiftEveryone/**
+!bulkMessageDelete/
+!bulkMessageDelete/**
 
 *.log
 .DS_Store
