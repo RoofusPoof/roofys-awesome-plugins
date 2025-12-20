@@ -24,7 +24,7 @@ for more privacy focused users, you can set it up to automatically delete your m
 this plugin is super simple, it just deletes the welcome message instantly upon joining a server. if you dont like getting sticker spammed.
 
 ## channelLogger
-message logger but awesome, you can see deleted channels and its message contains, it will be marked red and you can right click to delete once you saw what you needed to see.
+message logger but awesome, you can see deleted channels and its message contents, it will be marked red and you can right click to delete once you saw what you needed to see.
 
 ## XLaccountSwitcher
 
