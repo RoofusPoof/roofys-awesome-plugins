@@ -67,17 +67,7 @@ export default definePlugin({
 
     start() {
         console.log("[XLAccountSwitcher] Started");
-
-        // Validate all accounts on startup
-        const accounts = getAccounts();
-        if (accounts.length > 0) {
-            validateAllAccounts().then(result => {
-                if (result.invalid > 0) {
-                    showToast(`${result.invalid} invalid accounts moved to Invalid tab`, Toasts.Type.MESSAGE);
-                }
-                console.log(`[XLAccountSwitcher] ${result.valid} valid, ${result.invalid} invalid`);
-            });
-        }
+        // Validation is now done only when switching fails
     },
 
     stop() {

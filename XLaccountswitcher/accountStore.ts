@@ -1,4 +1,5 @@
 import { showToast, Toasts } from "@webpack/common";
+import { localStorage } from "@utils/localStorage";
 
 import { settings } from "./settings";
 
@@ -208,50 +209,62 @@ export function deleteAccount(id: string): boolean {
     return true;
 }
 
-export function switchToAccount(account: Account) {
+export async function switchToAccount(account: Account) {
+    showToast(`Verifying ${account.nickname}...`, Toasts.Type.MESSAGE);
+
+    // Validate the token first
+    const userInfo = await validateToken(account.token);
+    if (!userInfo) {
+        // Token is invalid - move to invalid tab
+        showToast(`${account.nickname} is invalid - moved to Invalid tab`, Toasts.Type.FAILURE);
+
+        const accounts = getAccounts();
+        const invalid = getInvalidAccounts();
+
+        // Remove from valid, add to invalid
+        saveAccounts(accounts.filter(a => a.id !== account.id));
+        invalid.push(account);
+        saveInvalidAccounts(invalid);
+        return;
+    }
+
     showToast(`Switching to ${account.nickname}...`, Toasts.Type.MESSAGE);
 
+    if (!localStorage) {
+        console.error("[XLAccountSwitcher] localStorage not available");
+        showToast("Switch failed - no storage access", Toasts.Type.FAILURE);
+        return;
+    }
+
+    // Clear session-related keys
+    const keysToRemove = [
+        "MultiAccountStore",
+        "accounts",
+        "accountIndex",
+        "shard_count",
+        "tokens",
+        "fingerprint",
+        "gatewayURL",
+        "email_cache"
+    ];
+
+    for (const key of keysToRemove) {
+        try { localStorage.removeItem(key); } catch { }
+    }
+
+    // Set the new token - Discord expects it as a quoted string
+    try {
+        localStorage.setItem("token", JSON.stringify(account.token));
+    } catch (e) {
+        console.error("[XLAccountSwitcher] Failed to set token:", e);
+        showToast("Switch failed - storage error", Toasts.Type.FAILURE);
+        return;
+    }
+
+    // Reload the page
     setTimeout(() => {
-        try {
-            const iframe = document.createElement("iframe");
-            document.body.appendChild(iframe);
-            const iframeWindow = iframe.contentWindow;
-
-            if (iframeWindow) {
-                const storage = iframeWindow.localStorage;
-
-                // clear multi-account related keys that can cause login redirect
-                const keysToRemove = [
-                    "MultiAccountStore",
-                    "accounts",
-                    "accountIndex",
-                    "shard_count"
-                ];
-
-                for (const key of keysToRemove) {
-                    try { storage.removeItem(key); } catch { }
-                }
-
-                storage.setItem("token", JSON.stringify(account.token));
-
-                try {
-                    for (const key of keysToRemove) {
-                        localStorage.removeItem(key);
-                    }
-                    localStorage.setItem("token", JSON.stringify(account.token));
-                } catch { }
-            }
-
-            document.body.removeChild(iframe);
-
-            setTimeout(() => {
-                window.location.href = window.location.origin + "/channels/@me";
-            }, 100);
-        } catch (error) {
-            console.error("[XLAccountSwitcher]", error);
-            showToast("Switch failed", Toasts.Type.FAILURE);
-        }
-    }, 500);
+        location.reload();
+    }, 100);
 }
 
 export function clearAllAccounts() {
