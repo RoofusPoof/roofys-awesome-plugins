@@ -2,7 +2,8 @@ import { Margins } from "@utils/margins";
 import { ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { Button, Forms, showToast, Text, TextInput, Toasts, useState } from "@webpack/common";
 
-import { Account, addAccount, deleteAccount, deleteInvalidAccount, getAccounts, getInvalidAccounts, massImportTokens, MassImportResult, retryValidateAccount, updateAccount } from "./accountStore";
+import { Account, addAccount, deleteAccount, deleteInvalidAccount, getAccounts, getAvatarUrl, getInvalidAccounts, massImportTokens, MassImportResult, retryValidateAccount, updateAccount, validateToken } from "./accountStore";
+import { localStorage } from "@utils/localStorage";
 
 const styles = {
     accountList: {
@@ -252,12 +253,66 @@ function AddEditForm({ account, onSave, onCancel }: AddEditFormProps) {
     const [nickname, setNickname] = useState(account?.nickname || "");
     const [token, setToken] = useState(account?.token || "");
     const [error, setError] = useState("");
+    const [addingCurrent, setAddingCurrent] = useState(false);
 
     const handleSubmit = () => {
         if (!nickname.trim()) { setError("Enter a nickname"); return; }
         if (!token.trim()) { setError("Enter a token"); return; }
         if (token.length < 50) { setError("Token too short"); return; }
         onSave(nickname, token);
+    };
+
+    const handleAddCurrentAccount = async () => {
+        setAddingCurrent(true);
+        setError("");
+
+        try {
+            if (!localStorage) {
+                setError("localStorage not available");
+                setAddingCurrent(false);
+                return;
+            }
+
+            const storedToken = localStorage.getItem("token");
+            if (!storedToken) {
+                setError("No token found");
+                setAddingCurrent(false);
+                return;
+            }
+
+            let currentToken: string;
+            try {
+                currentToken = JSON.parse(storedToken);
+            } catch {
+                currentToken = storedToken;
+            }
+
+            if (!currentToken || currentToken.length < 50) {
+                setError("Invalid token format");
+                setAddingCurrent(false);
+                return;
+            }
+
+            const userInfo = await validateToken(currentToken);
+            if (!userInfo) {
+                setError("Failed to validate current token");
+                setAddingCurrent(false);
+                return;
+            }
+
+            const displayName = userInfo.global_name || userInfo.username;
+            const avatarUrl = getAvatarUrl(userInfo.id, userInfo.avatar);
+
+            try {
+                addAccount(displayName, currentToken, userInfo.id, avatarUrl);
+                onCancel();
+            } catch (e) {
+            }
+        } catch (e) {
+            setError("Failed to add current account");
+        }
+
+        setAddingCurrent(false);
     };
 
     return (
@@ -267,6 +322,28 @@ function AddEditForm({ account, onSave, onCancel }: AddEditFormProps) {
                     never share your token silly!
                 </Text>
             </div>
+
+            {!account && (
+                <div style={{ marginBottom: "16px" }}>
+                    <button
+                        onClick={handleAddCurrentAccount}
+                        disabled={addingCurrent}
+                        style={{
+                            width: "100%",
+                            background: addingCurrent ? "#4e5058" : "#3ba55c",
+                            color: "#fff",
+                            border: "none",
+                            padding: "10px 16px",
+                            borderRadius: "4px",
+                            cursor: addingCurrent ? "not-allowed" : "pointer",
+                            fontWeight: 500,
+                            fontSize: "14px"
+                        }}
+                    >
+                        {addingCurrent ? "Adding..." : "Add current account"}
+                    </button>
+                </div>
+            )}
             <div style={styles.formSection}>
                 <Forms.FormTitle style={{ color: "#ffffff" }}>Nickname</Forms.FormTitle>
                 <TextInput placeholder="Main, Alt, etc" value={nickname} onChange={setNickname} />
