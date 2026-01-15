@@ -50,6 +50,10 @@ interface WipeState {
     avatarUrl: string;
     hidden: boolean;
     cancelled: boolean;
+    paused: boolean;
+    minimized: boolean;
+    lazyMode: boolean;
+    startTime: number;
 }
 
 interface CachedData {
@@ -57,7 +61,7 @@ interface CachedData {
     timestamp: number;
 }
 
-let globalState: WipeState = { inProgress: false, current: 0, total: 0, username: "", avatarUrl: "", hidden: false, cancelled: false };
+let globalState: WipeState = { inProgress: false, current: 0, total: 0, username: "", avatarUrl: "", hidden: false, cancelled: false, paused: false, minimized: false, lazyMode: false, startTime: 0 };
 let refreshUI: (() => void) | null = null;
 const messageCache: Map<string, CachedData> = new Map();
 let floatingEl: HTMLElement | null = null;
@@ -67,9 +71,44 @@ function setWipeState(update: Partial<WipeState>) {
     refreshUI?.();
     updateFloatingProgress();
 }
-// 100% of memory usage btw
 function cancelWipe() {
     globalState.cancelled = true;
+}
+
+function togglePause() {
+    globalState.paused = !globalState.paused;
+    updateFloatingProgress();
+}
+
+function toggleMinimize() {
+    globalState.minimized = !globalState.minimized;
+    updateFloatingProgress();
+}
+
+function getEstimatedTime(): string {
+    if (globalState.current === 0 || !globalState.startTime) return "calculating...";
+    const elapsed = Date.now() - globalState.startTime;
+    const avgPerMsg = elapsed / globalState.current;
+    const remaining = globalState.total - globalState.current;
+    const msRemaining = remaining * avgPerMsg;
+    if (globalState.lazyMode) {
+        const batches = Math.ceil(remaining / 5);
+        const lazyMs = batches * 180000;
+        return formatEstTime(lazyMs);
+    }
+    return formatEstTime(msRemaining);
+}
+
+function formatEstTime(ms: number): string {
+    if (ms < 1000) return "<1s";
+    const secs = Math.floor(ms / 1000);
+    if (secs < 60) return `${secs}s`;
+    const mins = Math.floor(secs / 60);
+    const remSecs = secs % 60;
+    if (mins < 60) return `${mins}m ${remSecs}s`;
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return `${hrs}h ${remMins}m`;
 }
 
 function getAvatarUrl(userId: string, avatar: string | null): string {
@@ -79,14 +118,18 @@ function getAvatarUrl(userId: string, avatar: string | null): string {
 
 function updateFloatingProgress() {
     if (!globalState.inProgress) {
-        floatingEl?.remove();
-        floatingEl = null;
+        if (floatingEl) {
+            floatingEl.classList.add("bmd-floating-hiding");
+            setTimeout(() => { floatingEl?.remove(); floatingEl = null; }, 300);
+        }
         return;
-    } // this one might actually crash your pc
+    }
 
     if (globalState.hidden) {
-        floatingEl?.remove();
-        floatingEl = null;
+        if (floatingEl) {
+            floatingEl.classList.add("bmd-floating-hiding");
+            setTimeout(() => { floatingEl?.remove(); floatingEl = null; }, 300);
+        }
         return;
     }
 
@@ -97,23 +140,36 @@ function updateFloatingProgress() {
     }
 
     const pct = globalState.total ? Math.round((globalState.current / globalState.total) * 100) : 0;
+    const estTime = getEstimatedTime();
+    const pauseText = globalState.paused ? "resume" : "pause";
+    const pauseClass = globalState.paused ? "bmd-floating-paused" : "";
+    const minimizedClass = globalState.minimized ? "bmd-floating-minimized" : "";
+
+    floatingEl.className = `bmd-floating ${pauseClass} ${minimizedClass}`;
     floatingEl.innerHTML = `
+        <span class="bmd-floating-minimize-btn" title="Minimize">−</span>
         <img src="${globalState.avatarUrl}" class="bmd-floating-avatar" />
-        <div class="bmd-floating-info">
-            <span class="bmd-floating-text">${globalState.current}/${globalState.total} deleted</span>
-            <div class="bmd-floating-bar"><div class="bmd-floating-fill" style="width:${pct}%"></div></div>
+        <div class="bmd-floating-content">
+            <div class="bmd-floating-info">
+                <span class="bmd-floating-text">${globalState.current}/${globalState.total}${globalState.paused ? " (paused)" : ""}</span>
+                <div class="bmd-floating-bar"><div class="bmd-floating-fill" style="width:${pct}%"></div></div>
+                <span class="bmd-floating-eta">~${estTime} remaining</span>
+            </div>
+            <div class="bmd-floating-actions">
+                <span class="bmd-floating-pause">${pauseText}</span>
+                <span class="bmd-floating-cancel">cancel</span>
+                <span class="bmd-floating-hide">hide</span>
+            </div>
         </div>
-        <span class="bmd-floating-cancel">cancel</span>
-        <span class="bmd-floating-hide">hide</span>
     `;
 
-    floatingEl.querySelector(".bmd-floating-hide")?.addEventListener("click", () => {
-        setWipeState({ hidden: true });
+    floatingEl.querySelector(".bmd-floating-avatar")?.addEventListener("click", () => {
+        if (globalState.minimized) toggleMinimize();
     });
-
-    floatingEl.querySelector(".bmd-floating-cancel")?.addEventListener("click", () => {
-        cancelWipe();
-    });
+    floatingEl.querySelector(".bmd-floating-minimize-btn")?.addEventListener("click", () => toggleMinimize());
+    floatingEl.querySelector(".bmd-floating-pause")?.addEventListener("click", () => togglePause());
+    floatingEl.querySelector(".bmd-floating-hide")?.addEventListener("click", () => setWipeState({ hidden: true }));
+    floatingEl.querySelector(".bmd-floating-cancel")?.addEventListener("click", () => cancelWipe());
 }
 
 function showCompletionNotification(count: number, username: string, avatarUrl: string, wasCancelled: boolean) {
@@ -270,12 +326,23 @@ async function saveFile(content: string, filename: string) {
     URL.revokeObjectURL(url);
 }
 
-async function wipeMessages(channelId: string, messages: any[], username: string, avatarUrl: string) {
-    setWipeState({ inProgress: true, current: 0, total: messages.length, username, avatarUrl, hidden: false, cancelled: false });
+async function wipeMessages(channelId: string, messages: any[], username: string, avatarUrl: string, lazyMode: boolean = false) {
+    setWipeState({
+        inProgress: true, current: 0, total: messages.length,
+        username, avatarUrl, hidden: false, cancelled: false,
+        paused: false, minimized: false, lazyMode, startTime: Date.now()
+    });
     let deleted = 0;
+    let batchCount = 0;
 
     for (let i = 0; i < messages.length; i++) {
         if (globalState.cancelled) break;
+
+        while (globalState.paused && !globalState.cancelled) {
+            await new Promise(r => setTimeout(r, 200));
+        }
+        if (globalState.cancelled) break;
+
         const msg = messages[i];
         let success = false;
         let attempts = 0;
@@ -296,12 +363,23 @@ async function wipeMessages(channelId: string, messages: any[], username: string
         }
 
         setWipeState({ current: i + 1 });
-        await new Promise(r => setTimeout(r, 50));
+
+        if (lazyMode) {
+            batchCount++;
+            if (batchCount >= 5 && i < messages.length - 1) {
+                batchCount = 0;
+                await new Promise(r => setTimeout(r, 180000));
+            } else {
+                await new Promise(r => setTimeout(r, 100));
+            }
+        } else {
+            await new Promise(r => setTimeout(r, 50));
+        }
     }
 
     const wasCancelled = globalState.cancelled;
     messageCache.delete(channelId);
-    setWipeState({ inProgress: false, current: 0, total: 0, hidden: false, cancelled: false });
+    setWipeState({ inProgress: false, current: 0, total: 0, hidden: false, cancelled: false, paused: false, minimized: false, lazyMode: false, startTime: 0 });
     showCompletionNotification(deleted, username, avatarUrl, wasCancelled);
 }
 
@@ -318,6 +396,7 @@ function WipeModal({ channelId, user, onClose }: { channelId: string; user: any;
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [previewSearch, setPreviewSearch] = useState("");
     const [previewPage, setPreviewPage] = useState(0);
+    const [lazyMode, setLazyMode] = useState(false);
     const [, forceUpdate] = useState({});
 
     refreshUI = () => forceUpdate({});
@@ -397,7 +476,7 @@ function WipeModal({ channelId, user, onClose }: { channelId: string; user: any;
         const toDelete = messages.filter(m => selectedIds.has(m.id));
         if (!toDelete.length) { showToast("nothing selected", Toasts.Type.MESSAGE); return; }
         onClose();
-        await wipeMessages(channelId, toDelete, displayName, displayIcon);
+        await wipeMessages(channelId, toDelete, displayName, displayIcon, lazyMode);
     };
 
     const handleQuickWipe = async (type: "all" | "attachments" | "filtered") => {
@@ -411,7 +490,7 @@ function WipeModal({ channelId, user, onClose }: { channelId: string; user: any;
         }
         if (!toProcess.length) { showToast("nothing to wipe", Toasts.Type.MESSAGE); return; }
         onClose();
-        await wipeMessages(channelId, toProcess, displayName, displayIcon);
+        await wipeMessages(channelId, toProcess, displayName, displayIcon, lazyMode);
     };
 
     const handleExport = async () => {
@@ -451,15 +530,23 @@ function WipeModal({ channelId, user, onClose }: { channelId: string; user: any;
 
     if (globalState.inProgress) {
         const pct = globalState.total ? Math.round((globalState.current / globalState.total) * 100) : 0;
+        const estTime = getEstimatedTime();
         return (
             <div className="bmd-modal-content">
                 <div className="bmd-user-info">
                     <img src={displayIcon} className="bmd-avatar" />
-                    <span className="bmd-user-name">wiping from {displayName}...</span>
+                    <div className="bmd-user-text">
+                        <span className="bmd-user-name">wiping from {displayName}...</span>
+                        {globalState.lazyMode && <span className="bmd-server-name">lazy mode enabled</span>}
+                        {globalState.paused && <span className="bmd-server-name" style={{ color: "#f0b232" }}>paused</span>}
+                    </div>
                 </div>
-                <div className="bmd-progress"><div className="bmd-progress-bar" style={{ width: `${pct}%` }} /></div>
-                <div className="bmd-progress-text">{globalState.current}/{globalState.total} ({pct}%)</div>
-                <button className="bmd-btn-red" onClick={cancelWipe}>cancel</button>
+                <div className="bmd-progress"><div className={`bmd-progress-bar ${globalState.paused ? "" : "deleting"}`} style={{ width: `${pct}%` }} /></div>
+                <div className="bmd-progress-text">{globalState.current}/{globalState.total} ({pct}%) • ~{estTime} remaining</div>
+                <div className="bmd-buttons">
+                    <button className="bmd-btn-blue" onClick={togglePause}>{globalState.paused ? "resume" : "pause"}</button>
+                    <button className="bmd-btn-red" onClick={cancelWipe}>cancel</button>
+                </div>
             </div>
         );
     }
@@ -498,6 +585,14 @@ function WipeModal({ channelId, user, onClose }: { channelId: string; user: any;
                         });
                     }} disabled={counting}>wipe attachments</button>
                     <button className="bmd-btn-blue" onClick={() => handleQuickWipe("filtered")} disabled={counting || !filterWords.trim()}>wipe filtered</button>
+                </div>
+
+                <div className="bmd-lazy-toggle">
+                    <label className="bmd-toggle-label">
+                        <input type="checkbox" checked={lazyMode} onChange={e => setLazyMode(e.target.checked)} />
+                        <span className="bmd-toggle-text">Lazy Deleting</span>
+                        <span className="bmd-toggle-info" title="Messages will be deleted in batches of 5 every 3 minutes to prevent Discord from limiting you from sending messages">?</span>
+                    </label>
                 </div>
 
                 <button className="bmd-btn-outline" onClick={() => setShowPreview(!showPreview)} disabled={counting}>
