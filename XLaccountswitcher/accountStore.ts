@@ -253,16 +253,13 @@ export function deleteAccount(id: string): boolean {
 export async function switchToAccount(account: Account) {
     showToast(`Verifying ${account.nickname}...`, Toasts.Type.MESSAGE);
 
-    // Validate the token first
     const userInfo = await validateToken(account.token);
     if (!userInfo) {
-        // Token is invalid - move to invalid tab
         showToast(`${account.nickname} is invalid - moved to Invalid tab`, Toasts.Type.FAILURE);
 
         const accounts = getAccounts();
         const invalid = getInvalidAccounts();
 
-        // Remove from valid, add to invalid
         saveAccounts(accounts.filter(a => a.id !== account.id));
         invalid.push(account);
         saveInvalidAccounts(invalid);
@@ -277,24 +274,43 @@ export async function switchToAccount(account: Account) {
         return;
     }
 
-    // Clear session-related keys
-    const keysToRemove = [
-        "MultiAccountStore",
-        "accounts",
-        "accountIndex",
-        "shard_count",
-        "tokens",
-        "fingerprint",
-        "gatewayURL",
-        "email_cache"
-    ];
-
-    for (const key of keysToRemove) {
-        try { localStorage.removeItem(key); } catch { }
-    }
-
-    // Set the new token - Discord expects it as a quoted string
     try {
+        const currentToken = localStorage.getItem("token");
+        const currentTokenParsed = currentToken ? JSON.parse(currentToken) : null;
+
+        const multiAccountRaw = localStorage.getItem("MultiAccountStore");
+        if (multiAccountRaw && currentTokenParsed) {
+            try {
+                const multiAccount = JSON.parse(multiAccountRaw);
+                if (multiAccount._state?.users) {
+                    const currentUserId = Object.keys(multiAccount._state.users).find(
+                        uid => multiAccount._state.users[uid]?.token === currentTokenParsed
+                    );
+                    if (currentUserId) {
+                        multiAccount._state.users[currentUserId].token = account.token;
+                        localStorage.setItem("MultiAccountStore", JSON.stringify(multiAccount));
+                    }
+                }
+            } catch { }
+        }
+
+        const tokensRaw = localStorage.getItem("tokens");
+        if (tokensRaw && currentTokenParsed) {
+            try {
+                const tokens: string[] = JSON.parse(tokensRaw);
+                const idx = tokens.indexOf(currentTokenParsed);
+                if (idx !== -1) {
+                    tokens[idx] = account.token;
+                    localStorage.setItem("tokens", JSON.stringify(tokens));
+                }
+            } catch { }
+        }
+
+        const keysToRemove = ["fingerprint", "gatewayURL", "email_cache"];
+        for (const key of keysToRemove) {
+            try { localStorage.removeItem(key); } catch { }
+        }
+
         localStorage.setItem("token", JSON.stringify(account.token));
     } catch (e) {
         console.error("[XLAccountSwitcher] Failed to set token:", e);
@@ -302,7 +318,6 @@ export async function switchToAccount(account: Account) {
         return;
     }
 
-    // Reload the page
     setTimeout(() => {
         location.reload();
     }, 100);
