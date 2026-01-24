@@ -23,8 +23,8 @@ import { closeModal, openModal } from "@utils/modal";
 import { chooseFile } from "@utils/web";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { CloudUpload } from "@vencord/discord-types";
-import { findCssClassesLazy } from "@webpack";
-import { Constants, Menu, MessageActions, RestAPI, SelectedChannelStore, Toasts } from "@webpack/common";
+import { findCssClassesLazy, findStoreLazy } from "@webpack";
+import { Constants, FluxDispatcher, Menu, MessageActions, RestAPI, SelectedChannelStore, Toasts } from "@webpack/common";
 
 import { CatboxPreviewModal } from "./modal";
 import { showUploadToast } from "./UploadToast";
@@ -32,6 +32,10 @@ import { showUploadToast } from "./UploadToast";
 const logger = new Logger("CatboxUploader");
 const Native = VencordNative.pluginHelpers.CatboxUploader as PluginNative<typeof import("./native")>;
 const OptionClasses = findCssClassesLazy("optionName", "optionIcon", "optionLabel");
+const PendingReplyStore = findStoreLazy("PendingReplyStore");
+
+// Store pending reply before Discord clears it
+const pendingReplies = new Map<string, any>();
 
 
 function CatboxIcon({ className, height = 24, width = 24 }: { className?: string; height?: number; width?: number; }) {
@@ -98,14 +102,15 @@ async function uploadToCatbox(file: File, userhash?: string): Promise<string> {
     return result.url!;
 }
 
-async function sendMessage(channelId: string, content: string): Promise<any> {
+async function sendMessage(channelId: string, content: string, reply?: any): Promise<any> {
     const msg = {
         content,
         tts: false,
         invalidEmojis: [],
         validNonShortcutEmojis: []
     };
-    return MessageActions._sendMessage(channelId, msg, {});
+    const options = reply ? MessageActions.getSendMessageOptionsForReply(reply) : {};
+    return MessageActions._sendMessage(channelId, msg, options);
 }
 
 async function editMessage(channelId: string, messageId: string, content: string): Promise<void> {
@@ -177,7 +182,7 @@ async function uploadVideoViaCatbox() {
         <CatboxPreviewModal
             rootProps={props}
             file={file}
-            onConfirm={async (processedFile) => {
+            onConfirm={async processedFile => {
                 await performUpload(channelId, processedFile);
             }}
             close={() => closeModal(key)}
@@ -186,9 +191,12 @@ async function uploadVideoViaCatbox() {
 }
 
 async function performUpload(channelId: string, file: File) {
+    const reply = PendingReplyStore.getPendingReply(channelId);
+    if (reply) FluxDispatcher.dispatch({ type: "DELETE_PENDING_REPLY", channelId });
+
     let placeholderMessageId: string | null = null;
     try {
-        const result = await sendMessage(channelId, `Uploading ${file.name} to Catbox`);
+        const result = await sendMessage(channelId, `Uploading ${file.name} to Catbox`, reply);
         placeholderMessageId = result?.body?.id;
     } catch (e) {
         logger.error("Failed to send placeholder:", e);
@@ -241,7 +249,7 @@ export default definePlugin({
         "textarea-context": ChatBarContextCheckbox,
         "channel-attach": AttachContextMenu
     },
-    //hacks TTV
+    // hacks TTV
     patches: [
         {
             find: "async uploadFiles(",
@@ -252,7 +260,19 @@ export default definePlugin({
                 }
             ],
         },
+        {
+            find: ".addFilesTo(",
+            replacement: {
+                match: /(\i)\.addFilesTo\((\i),(\i),/,
+                replace: "$self.captureReply($2),$1.addFilesTo($2,$3,"
+            }
+        }
     ],
+
+    captureReply(channelId: string) {
+        const reply = PendingReplyStore.getPendingReply(channelId);
+        if (reply) pendingReplies.set(channelId, reply);
+    },
 
 
     async handleVideoUploads(uploads: CloudUpload[]): Promise<boolean> {
@@ -283,16 +303,27 @@ export default definePlugin({
             return false;
         }
 
+        const reply = pendingReplies.get(channelId);
+        if (reply) {
+            pendingReplies.delete(channelId);
+            FluxDispatcher.dispatch({ type: "DELETE_PENDING_REPLY", channelId });
+        }
+
         const fileNames = videosToProcess.map(v => (v.upload.item.file as File).name).join(", ");
+        const totalSize = videosToProcess.reduce((sum, v) => sum + (v.upload.item.file as File).size, 0);
 
         let placeholderMessageId: string | null = null;
         try {
-            const result = await sendMessage(channelId, `Uploading to Catbox: ${fileNames}`);
+            const result = await sendMessage(channelId, `Uploading to Catbox: ${fileNames}`, reply);
             placeholderMessageId = result?.body?.id;
         } catch (e) {
             logger.error("Failed to send placeholder:", e);
             return false;
         }
+
+        const toast = settings.store.showToast
+            ? showUploadToast(fileNames, totalSize)
+            : null;
 
         const catboxUrls: string[] = [];
         const errors: string[] = [];
@@ -300,15 +331,6 @@ export default definePlugin({
         for (const { upload } of videosToProcess) {
             const file = upload.item.file as File;
             try {
-                if (settings.store.showToast) {
-                    Toasts.show({
-                        message: "Uploading...",
-                        type: Toasts.Type.MESSAGE,
-                        id: Toasts.genId(),
-                        options: { duration: 2000 }
-                    });
-                }
-
                 const catboxUrl = await uploadToCatbox(file, settings.store.userhash);
                 logger.info(`Uploaded ${file.name} to Catbox: ${catboxUrl}`);
                 catboxUrls.push(catboxUrl);
@@ -322,27 +344,20 @@ export default definePlugin({
             try {
                 if (catboxUrls.length > 0) {
                     await editMessage(channelId, placeholderMessageId, catboxUrls.join("\n"));
-                    if (settings.store.showToast) {
-                        Toasts.show({
-                            message: "OK",
-                            type: Toasts.Type.SUCCESS,
-                            id: Toasts.genId(),
-                            options: { duration: 3000 }
-                        });
-                    }
+                    toast?.complete();
                 } else {
                     await deleteMessage(channelId, placeholderMessageId);
-                    if (settings.store.showToast) {
-                        Toasts.show({
-                            message: "ERR",
-                            type: Toasts.Type.FAILURE,
-                            id: Toasts.genId(),
-                            options: { duration: 5000 }
-                        });
-                    }
+                    toast?.error();
+                    Toasts.show({
+                        message: "ERR",
+                        type: Toasts.Type.FAILURE,
+                        id: Toasts.genId(),
+                        options: { duration: 5000 }
+                    });
                 }
             } catch (e) {
                 logger.error("Failed to update placeholder:", e);
+                toast?.error();
             }
         }
 
